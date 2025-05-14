@@ -1,133 +1,40 @@
-mod shell;
-mod model;
-
-use std::collections::HashMap;
-use std::io::{self, Write};
-use std::fs;
-use std::process::Command as ProcessCommand;
-use serde::{Deserialize, Serialize};
-use clap::{Command, Arg};
-use colored::*;
-use std::path::PathBuf;
-use shell::Shell;
-use crate::model::Model;
-
-#[derive(Serialize, Deserialize)]
-struct Config {
-    model: Model,
-    max_tokens: i32
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let matches = Command::new("llm-term")
-        .version("1.0")
-        .author("dh1101")
-        .about("Generate terminal commands using OpenAI or local Ollama models")
-        .arg(Arg::new("prompt")
-            .help("The prompt describing the desired command")
-            .required(false)
-            .index(1))
-        .arg(Arg::new("config")
-            .short('c')
-            .long("config")
-            .help("Run configuration setup")
-            .action(clap::ArgAction::SetTrue))
-        .arg(
-            Arg::new("disable-cache")
-                .long("disable-cache")
-                .help("Disable cache and always query the LLM")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .get_matches();
-
-    let config_path = get_default_config_path().expect("Failed to get default config path");
-
-    if matches.get_flag("config") {
-        let config = create_config()?;
-        let content = serde_json::to_string_pretty(&config)?;
-        fs::write(&config_path, content)?;
-        println!("{}", "Configuration saved successfully.".green());
-        return Ok(());
-    }
-
-    let config = load_or_create_config(&config_path)?;
-
-    let cache_path = get_cache_path()?;
-    let mut cache = load_cache(&cache_path)?;
-
-    if let Some(prompt) = matches.get_one::<String>("prompt") {
-        let disable_cache = matches.get_flag("disable-cache");
-
-        if !disable_cache {
-            if let Some(cached_command) = cache.get(prompt) {
-                println!("{}", "This command exists in cache".yellow());
-                println!("{}", cached_command.cyan().bold());
-                println!("{}", "Do you want to execute this command? (y/n)".yellow());
-
-                let mut user_input = String::new();
-                io::stdin().read_line(&mut user_input)?;
-
-                if user_input.trim().to_lowercase() == "y" {
-                    execute_command(cached_command)?;
-                } else {
-                    println!("{}", "Do you want to invalidate the cache? (y/n)".yellow());
-                    user_input.clear();
-                    io::stdin().read_line(&mut user_input)?;
-
-                    if user_input.trim().to_lowercase() == "y" {
-                        // Invalidate cache
-                        cache.remove(prompt);
-                        save_cache(&cache_path, &cache)?;
-                        // Proceed to get command from LLM
-                        get_command_from_llm(&config, &mut cache, &cache_path, prompt)?;
-                    } else {
-                        println!("{}", "Command execution cancelled.".yellow());
-                    }
-                }
-                return Ok(());
-            } else {
-                // Not in cache, proceed to get command from LLM
-                get_command_from_llm(&config, &mut cache, &cache_path, prompt)?;
-            }
-        } else {
-            // Cache is disabled, proceed to get command from LLM
-            get_command_from_llm(&config, &mut cache, &cache_path, prompt)?;
-        }
-    } else {
-        println!("{}", "Please provide a prompt or use --config to set up the configuration.".yellow());
-    }
-
-    Ok(())
-}
-
-fn get_default_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let exe_path = std::env::current_exe()?;
-    let exe_dir = exe_path.parent().ok_or("Failed to get executable directory")?;
-    Ok(exe_dir.join("config.json"))
-}
-
-fn load_or_create_config(path: &PathBuf) -> Result<Config, Box<dyn std::error::Error>> {
-    if let Ok(content) = fs::read_to_string(path) {
-        Ok(serde_json::from_str(&content)?)
-    } else {
-        let config = create_config()?;
-        let content = serde_json::to_string_pretty(&config)?;
-        fs::write(path, content)?;
-        Ok(config)
-    }
-}
+// Function to modify in main.rs
 
 fn create_config() -> Result<Config, io::Error> {
     let model = loop {
-        println!("{}", "Select model:\n 1 for gpt-4o-mini\n 2 for gpt-4o\n 3 for ollama (llama3.1)".cyan());
+        println!("{}", "Select model:\n 1 for gpt-4o-mini\n 2 for gpt-4o\n 3 for ollama (llama3.1)\n 4 for llamacpp (.gguf model)".cyan());
 
         io::stdout().flush()?;
         let mut choice = String::new();
         io::stdin().read_line(&mut choice)?;
         match choice.trim() {
-            "1" => break Model::OpenAiGpt4oMini,
-            "2" => break Model::OpenAiGpt4o,
+            "1" => break Model::OpenAiGpt4o,
+            "2" => break Model::OpenAiGpt4oMini,
             "3" => break Model::Ollama("llama3.1".to_string()),
+            "4" => {
+                // Get model path
+                print!("{}", "Enter path to .gguf model file: ".cyan());
+                io::stdout().flush()?;
+                let mut model_path = String::new();
+                io::stdin().read_line(&mut model_path)?;
+                let model_path = model_path.trim().to_string();
+                
+                // Get server URL (default to localhost:8000)
+                print!("{}", "Enter server URL (default: http://localhost:8000): ".cyan());
+                io::stdout().flush()?;
+                let mut server_url = String::new();
+                io::stdin().read_line(&mut server_url)?;
+                let server_url = if server_url.trim().is_empty() {
+                    "http://localhost:8000".to_string()
+                } else {
+                    server_url.trim().to_string()
+                };
+                
+                break Model::LlamaCpp {
+                    model_path,
+                    server_url,
+                };
+            }
             _ => println!("{}", "Invalid choice. Please try again.".red()),
         }
     };
@@ -149,70 +56,4 @@ fn create_config() -> Result<Config, io::Error> {
         model,
         max_tokens,
     })
-}
-
-fn get_cache_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let exe_path = std::env::current_exe()?;
-    let exe_dir = exe_path.parent().ok_or("Failed to get executable directory")?;
-    Ok(exe_dir.join("cache.json"))
-}
-
-fn load_cache(path: &PathBuf) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
-    if let Ok(content) = fs::read_to_string(path) {
-        Ok(serde_json::from_str(&content)?)
-    } else {
-        Ok(HashMap::new())
-    }
-}
-
-fn save_cache(path: &PathBuf, cache: &HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
-    let content = serde_json::to_string_pretty(&cache)?;
-    fs::write(path, content)?;
-    Ok(())
-}
-
-fn get_command_from_llm(
-    config: &Config,
-    cache: &mut HashMap<String, String>,
-    cache_path: &PathBuf,
-    prompt: &String,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match &config.model.llm_get_command(config, prompt.as_str()) {
-        Ok(Some(command)) => {
-            println!("{}", &command.cyan().bold());
-            println!("{}", "Do you want to execute this command? (y/n)".yellow());
-
-            let mut user_input = String::new();
-            io::stdin().read_line(&mut user_input)?;
-
-            if user_input.trim().to_lowercase() == "y" {
-                execute_command(&command)?;
-            } else {
-                println!("{}", "Command execution cancelled.".yellow());
-            }
-
-            // Save command to cache
-            cache.insert(prompt.clone(), command.clone());
-            save_cache(cache_path, cache)?;
-        },
-        Ok(None) => println!("{}", "No command could be generated.".yellow()),
-        Err(e) => eprintln!("{}", format!("Error: {}", e).red()),
-    }
-
-    Ok(())
-}
-
-fn execute_command(command: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let (shell_cmd, shell_arg) = Shell::detect().to_shell_command_and_command_arg();
-
-    match ProcessCommand::new(shell_cmd).arg(shell_arg).arg(&command).output() {
-        Ok(output) => {
-            println!("{}", "Command output:".green().bold());
-            io::stdout().write_all(&output.stdout)?;
-            io::stderr().write_all(&output.stderr)?;
-        }
-        Err(e) => eprintln!("{}", format!("Failed to execute command: {}", e).red()),
-    }
-
-    Ok(())
 }

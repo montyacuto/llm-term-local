@@ -14,6 +14,12 @@ pub enum Model {
 
     #[serde(rename = "ollama")]
     Ollama(String),
+    
+    #[serde(rename = "llamacpp")]
+    LlamaCpp {
+        model_path: String,
+        server_url: String,
+    },
 }
 
 impl Model {
@@ -58,6 +64,14 @@ impl Model {
             Model::OpenAiGpt4o => "gpt-4o".to_string(),
             Model::OpenAiGpt4oMini => "gpt-4o-mini".to_string(),
             Model::Ollama(model_name) => model_name.to_string(),
+            Model::LlamaCpp { model_path, .. } => {
+                // Extract just the filename from the path
+                std::path::Path::new(model_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(model_path)
+                    .to_string()
+            },
         }
     }
 
@@ -66,6 +80,14 @@ impl Model {
             Model::OpenAiGpt4o => "https://api.openai.com/v1/".to_string(),
             Model::OpenAiGpt4oMini => "https://api.openai.com/v1/".to_string(),
             Model::Ollama(_) => "http://localhost:11434/v1/".to_string(),
+            Model::LlamaCpp { server_url, .. } => {
+                // Ensure URL ends with a trailing slash
+                if server_url.ends_with('/') {
+                    server_url.clone()
+                } else {
+                    format!("{}/", server_url)
+                }
+            },
         }
     }
 
@@ -74,6 +96,7 @@ impl Model {
             Model::OpenAiGpt4o => Auth::from_env().expect("OPENAI_API_KEY environment variable not set"),
             Model::OpenAiGpt4oMini => Auth::from_env().expect("OPENAI_API_KEY environment variable not set"),
             Model::Ollama(_) => Auth::new("ollama"),
+            Model::LlamaCpp { .. } => Auth::new(""), // No auth required for local server
         }
     }
 
@@ -99,6 +122,4 @@ impl Model {
             Assume you are operating in the current directory of the user unless explicitly stated otherwise.
         ", shell_command_type, std::env::consts::OS)
     }
-
-
 }
